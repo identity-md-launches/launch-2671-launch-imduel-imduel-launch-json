@@ -7,7 +7,7 @@ import {PoolId} from "v4-core/src/types/PoolId.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
-import {SwapParams} from "v4-core/src/types/PoolOperation.sol";
+import {SwapParams, ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {IMDuelHook} from "../src/IMDuelHook.sol";
 import {IChessEngine} from "../src/IChessEngine.sol";
@@ -242,6 +242,8 @@ contract GameTest is Base {
         SwapParams memory p = SwapParams(true, -1e18, MIN_PRICE_LIMIT);
         vm.expectRevert(IMDuelHook.NotManager.selector);
         hook.afterInitialize(address(this), pool, SQRT_PRICE_1_1, 0);
+        vm.expectRevert(IMDuelHook.NotManager.selector);
+        hook.beforeAddLiquidity(address(this), pool, ModifyLiquidityParams(-60, 60, 1e18, 0), "");
         vm.expectRevert(IMDuelHook.NotManager.selector);
         hook.beforeSwap(address(this), pool, p, "");
         vm.expectRevert(IMDuelHook.NotManager.selector);

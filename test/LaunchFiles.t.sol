@@ -27,18 +27,21 @@ contract LaunchFilesTest is Base {
         // the permissions the file names are the hook's: the launch mines the address from them
         string[] memory names = vm.parseJsonStringArray(json, ".hook.permissions");
         uint160 flags;
-        for (uint256 i; i < names.length; i++) flags |= flag(names[i]);
+        for (uint256 i; i < names.length; i++) {
+            flags |= flag(names[i]);
+        }
         assertEq(flags, IMDUEL_HOOK_FLAGS, "permissions");
         address at = address(flags | (uint160(0x1A0C4 + hooksDeployed++) << 40));
         deployCodeTo("IMDuelHook.sol:IMDuelHook", args, at);
         IMDuelHook h = IMDuelHook(at);
         Hooks.Permissions memory p = h.getHookPermissions();
-        uint160 told = (p.afterInitialize ? Hooks.AFTER_INITIALIZE_FLAG : 0) | (p.beforeSwap ? Hooks.BEFORE_SWAP_FLAG : 0)
-            | (p.afterSwap ? Hooks.AFTER_SWAP_FLAG : 0) | (p.beforeSwapReturnDelta ? Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG : 0)
+        uint160 told = (p.afterInitialize ? Hooks.AFTER_INITIALIZE_FLAG : 0)
+            | (p.beforeAddLiquidity ? Hooks.BEFORE_ADD_LIQUIDITY_FLAG : 0) | (p.beforeSwap ? Hooks.BEFORE_SWAP_FLAG : 0)
+            | (p.afterSwap ? Hooks.AFTER_SWAP_FLAG : 0)
+            | (p.beforeSwapReturnDelta ? Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG : 0)
             | (p.afterSwapReturnDelta ? Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG : 0);
-        bool others = p.beforeInitialize || p.beforeAddLiquidity || p.afterAddLiquidity || p.beforeRemoveLiquidity
-            || p.afterRemoveLiquidity || p.beforeDonate || p.afterDonate || p.afterAddLiquidityReturnDelta
-            || p.afterRemoveLiquidityReturnDelta;
+        bool others = p.beforeInitialize || p.afterAddLiquidity || p.beforeRemoveLiquidity || p.afterRemoveLiquidity
+            || p.beforeDonate || p.afterDonate || p.afterAddLiquidityReturnDelta || p.afterRemoveLiquidityReturnDelta;
         assertTrue(told == flags && !others, "getHookPermissions() names the file's permissions, nothing else");
 
         assertEq(address(h.manager()), address(manager));
@@ -52,6 +55,7 @@ contract LaunchFilesTest is Base {
     function flag(string memory name) internal pure returns (uint160) {
         bytes32 n = keccak256(bytes(name));
         if (n == keccak256("afterInitialize")) return Hooks.AFTER_INITIALIZE_FLAG;
+        if (n == keccak256("beforeAddLiquidity")) return Hooks.BEFORE_ADD_LIQUIDITY_FLAG;
         if (n == keccak256("beforeSwap")) return Hooks.BEFORE_SWAP_FLAG;
         if (n == keccak256("afterSwap")) return Hooks.AFTER_SWAP_FLAG;
         if (n == keccak256("beforeSwapReturnDelta")) return Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG;

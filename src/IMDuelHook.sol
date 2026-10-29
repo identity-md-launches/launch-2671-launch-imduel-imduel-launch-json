@@ -12,15 +12,16 @@ import {Currency, CurrencyLibrary} from "v4-core/src/types/Currency.sol";
 import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, toBeforeSwapDelta} from "v4-core/src/types/BeforeSwapDelta.sol";
-import {SwapParams} from "v4-core/src/types/PoolOperation.sol";
+import {SwapParams, ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
 import {Chess} from "./Chess.sol";
 import {Strength} from "./Strength.sol";
 import {Rules} from "./Rules.sol";
 import {IChessEngine} from "./IChessEngine.sol";
 
 // The hook's permission bits; its address must carry them.
-uint160 constant IMDUEL_HOOK_FLAGS = Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-    | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
+uint160 constant IMDUEL_HOOK_FLAGS = Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+    | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+    | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
 
 interface IERC20Min {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
@@ -152,10 +153,11 @@ contract IMDuelHook is IUnlockCallback {
     // at the end of the block before, can't sell the hook $IMDUEL dear: it must be held through two public blocks.
     // Every trade and batch of the main duel samples it before moving its price.
     uint256 internal samples;
-    // Each pool's in-range liquidity at the start of its three latest traded blocks (_sampleDepth), one slot: the
-    // block of the latest sample (40 bits) and the three samples (56 bits each, newest lowest), packed like the
-    // prices. A bid's strength is measured against the smallest of the three, so liquidity added around a trade and
-    // removed after it (in one block, or held only across one) doesn't shrink the trade's share.
+    // Each pool's in-range liquidity at the start of its three latest sampled blocks (_recordDepth: a block is
+    // sampled by its first swap or by its first liquidity add, whichever comes first), one slot: the block of the
+    // latest sample (40 bits) and the three samples (56 bits each, newest lowest), packed like the prices. A bid's
+    // strength is measured against the smallest of the three, so liquidity added around a trade and removed after
+    // it (in one block, or held only across one) doesn't shrink the trade's share.
     mapping(PoolId => uint256) internal depths;
     mapping(uint256 => uint256) public pile; // protocol slices waiting for conversion, by currency id
     mapping(address => mapping(uint256 => uint256)) public owed; // rewards to claim (withdraw), by currency id
@@ -221,8 +223,14 @@ contract IMDuelHook is IUnlockCallback {
 
     /// The callbacks this hook uses, which its address carries (v4's BaseHook convention: the IMD launch reads it).
     function getHookPermissions() public pure returns (Hooks.Permissions memory p) {
-        (p.afterInitialize, p.beforeSwap, p.afterSwap, p.beforeSwapReturnDelta, p.afterSwapReturnDelta) =
-        (true, true, true, true, true);
+        (
+            p.afterInitialize,
+            p.beforeAddLiquidity,
+            p.beforeSwap,
+            p.afterSwap,
+            p.beforeSwapReturnDelta,
+            p.afterSwapReturnDelta
+        ) = (true, true, true, true, true, true);
     }
 
     function game(PoolId id) external view returns (Game memory) {
@@ -272,9 +280,27 @@ contract IMDuelHook is IUnlockCallback {
         return IHooks.afterInitialize.selector;
     }
 
+    /// Records the pool's in-range liquidity before an add as the block's start liquidity (_recordDepth), if nothing
+    /// has sampled this block yet: so liquidity added in a block is never the depth that block's bids are measured
+    /// against, whether a swap follows it in the same transaction or not. It never refuses an add and returns no
+    /// delta. (Removes have no callback: one before a block's first sample only lowers it, which makes every bid
+    /// stronger, both teams' alike. The launch factory's fee collection is a zero-liquidity modify, a remove to v4.)
+    /// An empty pool is not sampled here: its first block measures against what its first trade finds, so the launch
+    /// factory's pool, seeded and traded in the block it opens in, works from its first trade.
+    function beforeAddLiquidity(address, PoolKey calldata key, ModifyLiquidityParams calldata, bytes calldata)
+        external
+        returns (bytes4)
+    {
+        _onlyManager();
+        PoolId id = key.toId();
+        uint256 liquidity = manager.getLiquidity(id);
+        if (liquidity != 0) _recordDepth(id, liquidity);
+        return IHooks.beforeAddLiquidity.selector;
+    }
+
     /// Reads the pool once for the whole swap (chest values, strength) and takes the parts of the fee due in the
     /// specified currency. The rest is taken in afterSwap. The depth a bid's strength is measured against is not
-    /// the pool's liquidity now but the smallest it was at the start of the three latest traded blocks
+    /// the pool's liquidity now but the smallest it was at the start of the three latest sampled blocks
     /// (_sampleDepth): otherwise liquidity added just before an opponent's trade and removed just after it, at no
     /// cost, would play that trade's move at 0%.
     function beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
@@ -506,23 +532,30 @@ contract IMDuelHook is IUnlockCallback {
         samples = (s & ((1 << 208) - 1)) | (block.number << 208); // this block's batch
     }
 
-    /// Records `liquidity` as pool `id`'s in-range liquidity at the start of this block, once per block (the first
-    /// observation of a block comes before any swap of it has changed it), and returns the depth a bid's strength is
-    /// measured against: the smallest start liquidity of the pool's three latest traded blocks (unsampled ones are
-    /// skipped; a pool that never held liquidity at a block's start gives 0, and a share of nothing plays at 0%).
-    /// Liquidity has to be in the pool at the start of three traded blocks to count, held through two public ones
-    /// where anyone can trade against it, and then it shrinks every bid's share, its provider's own included;
-    /// liquidity removed for a block makes every bid stronger, both teams' alike, and the cap bounds that.
+    /// Records `liquidity` (the pool's in-range liquidity now, at a swap) as pool `id`'s liquidity at the start of
+    /// this block if nothing has sampled the block yet, and returns the depth a bid's strength is measured against:
+    /// the smallest start liquidity of the pool's three latest sampled blocks (unsampled ones are skipped; a pool
+    /// that never held liquidity at a block's start gives 0, and a share of nothing plays at 0%). A block's first
+    /// observation is its first swap or its first liquidity add (beforeAddLiquidity, which records the liquidity
+    /// before the add), so liquidity added in a block never enters that block's sample, however the transaction is
+    /// shaped: to count, liquidity has to be in the pool at the start of three sampled blocks, that is held across
+    /// three block boundaries, and then it shrinks every bid's share, its provider's own included. Liquidity
+    /// removed for a block makes every bid stronger, both teams' alike, and the cap bounds that.
     function _sampleDepth(PoolId id, uint256 liquidity) internal returns (uint256 depth) {
-        uint256 s = depths[id];
-        if ((s >> 168) & 0xffffffffff != block.number) {
-            s = (block.number << 168) | ((s << SAMPLE_BITS) & ((1 << 168) - 1)) | _pack(uint160(liquidity));
-            depths[id] = s;
-        }
+        uint256 s = _recordDepth(id, liquidity);
         for (uint256 i; i < 3; i++) {
             uint256 l = _unpack((s >> (i * SAMPLE_BITS)) & ((1 << SAMPLE_BITS) - 1));
             if (l != 0 && (depth == 0 || l < depth)) depth = l;
         }
+    }
+
+    /// Records `liquidity` as pool `id`'s in-range liquidity at the start of this block, once per block (the first
+    /// call of a block wins), and returns the samples word.
+    function _recordDepth(PoolId id, uint256 liquidity) internal returns (uint256 s) {
+        s = depths[id];
+        if ((s >> 168) & 0xffffffffff == block.number) return s;
+        s = (block.number << 168) | ((s << SAMPLE_BITS) & ((1 << 168) - 1)) | _pack(uint160(liquidity));
+        depths[id] = s;
     }
 
     /// Records `sqrtPrice` as the main duel's price at the start of this block, once per block (the first observation

@@ -12,6 +12,7 @@
     ],
     "permissions": [
       "afterInitialize",
+      "beforeAddLiquidity",
       "beforeSwap",
       "afterSwap",
       "beforeSwapReturnDelta",
