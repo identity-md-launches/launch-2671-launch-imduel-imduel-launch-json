@@ -7,7 +7,7 @@ import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 
 /// How the IMD launch factory opens a hook launch (Ethereum policy v34): a 1B-supply
 /// token, its pool with IMD at fee 12500 and spacing 60, opening at 2,500 IMD for the whole supply, 85% of the supply
-/// seeded single-sided in the token (the launch's poolBps; 10% is the swarm's, 5% team supply). And the hook's constructor arguments as a launch file (launch/hook.json) gives
+/// seeded single-sided in the token (the launch's poolBps; 10% is the swarm's, 10% team supply: 5% the team, 5% reserved for the Robinhood Chain duel launch, 2026-10-29). And the hook's constructor arguments as a launch file (launch/hook.json) gives
 /// them. Shared by the launch tests and the mainnet-fork rehearsal (script/RehearseMainnet.s.sol).
 library LaunchPolicy {
     uint256 internal constant SUPPLY = 1e27;
@@ -15,7 +15,7 @@ library LaunchPolicy {
     int24 internal constant SPACING = 60;
     int24 internal constant OPEN_TICK = 128_940; // |log1.0001(2,500 IMD / 1e9 tokens)|, on the 60 spacing
     int24 internal constant EDGE = 887_220;
-    uint256 internal constant SEED_BPS = 8_500;
+    uint256 internal constant SEED_BPS = 8_000;
 
     /// The opening price and the single-sided seed for a token sorting below IMD (`tokenIs0`, price = IMD per token)
     /// or above it: the token alone, on the side of the price it is sold along.
