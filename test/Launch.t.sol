@@ -87,18 +87,24 @@ contract LaunchTest is Base {
 
         // trading on: the IMD slice converts into $IMDUEL in the main duel itself, half to its chest, half burned
         uint256 dead = MockERC20(Currency.unwrap(duel)).balanceOf(address(0xdEaD));
+        vm.recordLogs();
         for (uint256 i; i < 30; i++) {
             next(12);
             if (nextTeam() == (duel == pool.currency0 ? 0 : 1)) buy(100e18);
             else sell(2_000_000e18);
         }
-        assertEq(MockERC20(Currency.unwrap(duel)).balanceOf(address(0xdEaD)), dead, "these trades swing the price every block: no batch trusts it yet");
+        assertEq(
+            MockERC20(Currency.unwrap(duel)).balanceOf(address(0xdEaD)),
+            dead,
+            "these trades swing the price every block: no batch trusts it yet"
+        );
         sampleBlocks(pool); // a calm stretch of three blocks
         next(12);
         buy(100e18);
         assertGt(MockERC20(Currency.unwrap(duel)).balanceOf(address(0xdEaD)), dead, "slice converted and half burned");
         assertGt(hook.chest(id, duel == pool.currency0 ? 0 : 1), 0, "the $IMDUEL chest grows");
-        assertGt(st().ply, 20, "a move every block");
+        // A finished game resets ply; count played moves across game boundaries.
+        assertGt(count(vm.getRecordedLogs(), MOVED), 20, "moves continue across games");
         assertSolvent(nobody());
     }
 
@@ -119,12 +125,15 @@ contract LaunchTest is Base {
         uint160 a = TickMath.getSqrtPriceAtTick(-EDGE);
         uint160 b = TickMath.getSqrtPriceAtTick(open);
         uint256 liquidity = FullMath.mulDiv(SUPPLY * LaunchPolicy.SEED_BPS / 10_000, 1 << 96, b - a);
-        modifyLiquidityRouter.modifyLiquidity(pool, ModifyLiquidityParams(-EDGE, open, int256(liquidity * 999 / 1000), 0), "");
+        modifyLiquidityRouter.modifyLiquidity(
+            pool, ModifyLiquidityParams(-EDGE, open, int256(liquidity * 999 / 1000), 0), ""
+        );
         assertEq(Currency.unwrap(hook.imduel()), address(t));
         vm.deal(address(this), 100 ether);
         swapNativeInput(pool, true, -0.5 ether, "", 0.5 ether); // buy $IMDUEL with ETH
         assertEq(st().closeBlock, vm.getBlockNumber(), "the first buy takes White's turn");
         uint256 dead = t.balanceOf(address(0xdEaD));
+        vm.recordLogs();
         for (uint256 i; i < 30; i++) {
             next(12);
             if (nextTeam() == 1) swapNativeInput(pool, true, -0.5 ether, "", 0.5 ether);
@@ -134,7 +143,8 @@ contract LaunchTest is Base {
         next(12);
         swapNativeInput(pool, true, -0.5 ether, "", 0.5 ether);
         assertGt(t.balanceOf(address(0xdEaD)), dead, "the ETH slice bought $IMDUEL, half burned");
-        assertGt(st().ply, 20);
+        // A finished game resets ply; count played moves across game boundaries.
+        assertGt(count(vm.getRecordedLogs(), MOVED), 20, "moves continue across games");
         assertSolvent(nobody());
     }
 

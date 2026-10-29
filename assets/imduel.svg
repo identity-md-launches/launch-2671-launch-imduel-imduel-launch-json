@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000" role="img" aria-labelledby="title desc">
+  <title id="title">IMDuel</title>
+  <desc id="desc">A diamond of nine equal chessboard squares, with dark corners and centre, inside a thin bone diamond frame on ink.</desc>
+  <rect width="1000" height="1000" fill="#1b1715"/>
+  <g transform="translate(500 500) rotate(45)">
+    <g fill="#1b1715">
+      <rect x="-174" y="-174" width="116" height="116"/>
+      <rect x="-58" y="-174" width="116" height="116" fill="#ebe4d5"/>
+      <rect x="58" y="-174" width="116" height="116"/>
+      <rect x="-174" y="-58" width="116" height="116" fill="#ebe4d5"/>
+      <rect x="-58" y="-58" width="116" height="116"/>
+      <rect x="58" y="-58" width="116" height="116" fill="#ebe4d5"/>
+      <rect x="-174" y="58" width="116" height="116"/>
+      <rect x="-58" y="58" width="116" height="116" fill="#ebe4d5"/>
+      <rect x="58" y="58" width="116" height="116"/>
+    </g>
+    <rect x="-210" y="-210" width="420" height="420" fill="none" stroke="#ebe4d5" stroke-width="4"/>
+  </g>
+</svg>
