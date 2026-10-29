@@ -24,9 +24,7 @@ struct HookConfig {
 contract IMDuelHarness is IMDuelHook {
     using PoolIdLibrary for PoolKey;
 
-    constructor(HookConfig memory c)
-        IMDuelHook(c.manager, c.engine, c.imd, c.minImd, c.minImduel, c.turnBlocks)
-    {}
+    constructor(HookConfig memory c) IMDuelHook(c.manager, c.engine, c.imd, c.minImd, c.minImduel, c.turnBlocks) {}
 
     /// Suites written before the opening surcharge trade right after the main duel opens and expect the plain fee;
     /// the surcharge's own tests and the invariant suites switch it on (the real hook always has it).
@@ -55,7 +53,8 @@ contract IMDuelHarness is IMDuelHook {
         (uint8 action, bytes memory body) = abi.decode(data, (uint8, bytes));
         if (action != 9) return super.unlockCallback(data);
         _onlyManager();
-        (PoolKey memory key, uint16 move, address owner, uint256 cap) = abi.decode(body, (PoolKey, uint16, address, uint256));
+        (PoolKey memory key, uint16 move, address owner, uint256 cap) =
+            abi.decode(body, (PoolKey, uint16, address, uint256));
         this.applyAndPay(key, move, owner, cap);
         return "";
     }
@@ -70,6 +69,11 @@ contract IMDuelHarness is IMDuelHook {
         uint256 team = teamOf(g.slice, g.gameNo, black);
         _apply(id, g, move, Rules.move(g.board, mover, other, black, move), t);
         _payBounty(id, key, g, team, t);
+    }
+
+    /// The most a batch of a pile of `amount` spends at minimum `min` (_batch).
+    function batch(uint256 amount, uint256 min) external pure returns (uint256) {
+        return _batch(amount, min);
     }
 
     /// The position key held for half-move `ply`.

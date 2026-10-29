@@ -17,8 +17,19 @@ contract SizeTest is Test {
     function test_deployedCodeFitsTheBudgets() public {
         address v5 = vm.deployCode("ChessEngineV5.sol:ChessEngineV5"); // 200 runs (foundry.toml)
         address at = address(IMDUEL_HOOK_FLAGS | (uint160(0x512E) << 40));
-        deployCodeTo("IMDuelHook.sol:IMDuelHook", abi.encode(IPoolManager(address(1)), IChessEngine(v5),
-            Currency.wrap(address(2)), uint24(0), uint24(0), 1, 1, 1, 3), at);
+        // the launch's six arguments (launch.json): the constructor refuses a zero minimum
+        deployCodeTo(
+            "IMDuelHook.sol:IMDuelHook",
+            abi.encode(
+                IPoolManager(address(1)),
+                IChessEngine(v5),
+                Currency.wrap(address(2)),
+                uint256(10e18),
+                uint256(1e24),
+                uint256(3)
+            ),
+            at
+        );
         emit log_named_uint("hook", at.code.length);
         emit log_named_uint("engine v5", v5.code.length);
         assertLe(at.code.length, HOOK_BUDGET, "hook");

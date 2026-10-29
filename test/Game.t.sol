@@ -266,6 +266,15 @@ contract GameTest is Base {
         c.turnBlocks = 1_001;
         vm.expectRevert(IMDuelHook.BadConfig.selector);
         newHook(c);
+        // a zero minimum would make every conversion batch spend nothing, so the slice would never convert
+        c = config(engine, currency0);
+        c.minImd = 0;
+        vm.expectRevert(IMDuelHook.BadConfig.selector);
+        newHook(c);
+        c = config(engine, currency0);
+        c.minImduel = 0;
+        vm.expectRevert(IMDuelHook.BadConfig.selector);
+        newHook(c);
     }
 
     /// The launch factory deploys the hook and opens the main duel in one transaction: the first pool opened is the

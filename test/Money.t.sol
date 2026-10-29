@@ -67,7 +67,9 @@ contract MoneyTest is Base {
             (uint256 team, uint256 chestIdx) = i == 0 ? (1, 0) : (0, 1);
             before = hook.chest(id, chestIdx);
             trade(team, 1e18, address(0));
-            assertEq(hook.chest(id, chestIdx) - before, 1e18 * bps[i] / 10_000, "the main duel's chest share at this age");
+            assertEq(
+                hook.chest(id, chestIdx) - before, 1e18 * bps[i] / 10_000, "the main duel's chest share at this age"
+            );
             // a duel opened now: no surcharge, even in the main duel's opening minutes
             (ks[i],) = initPool(currency0, currency1, IHooks(address(hook)), fees[i], SQRT_PRICE_1_1);
             addLiquidity(ks[i]);
@@ -93,7 +95,9 @@ contract MoneyTest is Base {
     }
 
     function test_chestsStayAboutEqualInValue() public {
-        for (uint256 i; i < 30; i++) trade(1, 1e18, address(0)); // one-sided trading
+        for (uint256 i; i < 30; i++) {
+            trade(1, 1e18, address(0)); // one-sided trading
+        }
         uint256 c0 = hook.chest(id, 0);
         uint256 c1 = hook.chest(id, 1);
         assertApproxEqRel(c0, c1, 0.2e18, "within 20% at a price near 1");
@@ -106,9 +110,19 @@ contract MoneyTest is Base {
     function test_aTradeStoppedByItsPriceLimitIsRefused() public {
         uint256 before = currency0.balanceOfSelf();
         vm.expectRevert(); // PartialFill, wrapped by the pool manager
-        swapRouter.swap(pool, SwapParams(true, -100e18, SQRT_PRICE_1_1 * 99_999 / 100_000), PoolSwapTest.TestSettings(false, false), "");
+        swapRouter.swap(
+            pool,
+            SwapParams(true, -100e18, SQRT_PRICE_1_1 * 99_999 / 100_000),
+            PoolSwapTest.TestSettings(false, false),
+            ""
+        );
         assertEq(currency0.balanceOfSelf(), before, "nothing paid");
-        swapRouter.swap(pool, SwapParams(true, -1e18, SQRT_PRICE_1_1 * 99_999 / 100_000), PoolSwapTest.TestSettings(false, false), "");
+        swapRouter.swap(
+            pool,
+            SwapParams(true, -1e18, SQRT_PRICE_1_1 * 99_999 / 100_000),
+            PoolSwapTest.TestSettings(false, false),
+            ""
+        );
         assertEq(claims(currency0), 5e15, "a trade that fits inside its limit goes through, at 0.5%");
     }
 
@@ -254,7 +268,9 @@ contract MoneyTest is Base {
         // a native ETH pool: White (ETH's team) is paid in ETH, to a contract that refuses ETH
         (pool, id) = initPool(CurrencyLibrary.ADDRESS_ZERO, currency1, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
         vm.deal(address(this), 1_000 ether);
-        modifyLiquidityRouter.modifyLiquidity{value: 200 ether}(pool, ModifyLiquidityParams(-887220, 887220, 100e18, 0), "");
+        modifyLiquidityRouter.modifyLiquidity{value: 200 ether}(
+            pool, ModifyLiquidityParams(-887220, 887220, 100e18, 0), ""
+        );
         hook.fundChest{value: 100 ether}(pool, false, 100 ether);
         address refuser = address(new RefusesEth());
         vm.recordLogs();
@@ -272,6 +288,40 @@ contract MoneyTest is Base {
         assertEq(refuser.balance, 3 ether);
         assertEq(hook.owed(refuser, 0), 0);
         assertEq(claims(CurrencyLibrary.ADDRESS_ZERO), hook.chest(id, 0));
+    }
+
+    /// withdrawTo refuses the zero address: a token reward sent there would revert in the token, but native ETH
+    /// would simply be burned by the PoolManager's transfer. The reward stays owed.
+    function test_withdrawToRefusesTheZeroAddress() public {
+        (pool, id) = initPool(CurrencyLibrary.ADDRESS_ZERO, currency1, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
+        vm.deal(address(this), 1_000 ether);
+        hook.fundChest{value: 100 ether}(pool, false, 100 ether);
+        rookTakesQueen(false, address(this), 1e30); // White (ETH's team) is paid in ETH: 3 ether owed to this contract
+        assertEq(hook.owed(address(this), 0), 3 ether, "recorded");
+        uint256 held = claims(CurrencyLibrary.ADDRESS_ZERO);
+        vm.expectRevert(IMDuelHook.BadValue.selector);
+        hook.withdrawTo(CurrencyLibrary.ADDRESS_ZERO, address(0));
+        assertEq(hook.owed(address(this), 0), 3 ether, "still owed");
+        assertEq(claims(CurrencyLibrary.ADDRESS_ZERO), held, "nothing left the hook");
+        assertEq(address(0).balance, 0, "nothing burned");
+        vm.expectRevert(IMDuelHook.BadValue.selector);
+        hook.withdrawTo(currency0, address(0)); // the token path refuses it the same way, before any transfer
+        hook.withdrawTo(CurrencyLibrary.ADDRESS_ZERO, address(0xBEEF)); // a real destination works
+        assertEq(address(0xBEEF).balance, 3 ether);
+        assertEq(hook.owed(address(this), 0), 0);
+    }
+
+    /// A conversion batch spends at most ten minimums exactly, a pile under that whole, and a minimum too large to
+    /// multiply (the suites' "never") leaves the pile whole without overflowing.
+    function test_aBatchSpendsAtMostTenMinimumsExactly() public view {
+        uint256 min = 10e18;
+        assertEq(hook.batch(99e18, min), 99e18, "under the bound: the whole pile");
+        assertEq(hook.batch(100e18, min), 100e18, "at the bound");
+        assertEq(hook.batch(100e18 + 9, min), 100e18, "a few wei over: the bound, not the pile");
+        assertEq(hook.batch(100e18 + 10, min), 100e18, "over: the bound");
+        assertEq(hook.batch(1e30, min), 100e18, "far over: the bound");
+        assertEq(hook.batch(5, NEVER), 5, "a never-minimum: the pile, no overflow");
+        assertEq(hook.batch(0, min), 0);
     }
 
     // ---------------------------------------------------------------- funding a chest
