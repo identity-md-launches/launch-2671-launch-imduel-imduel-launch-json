@@ -6,7 +6,7 @@ import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 
 /// How the IMD launch factory opens a hook launch (Ethereum policy v34): a 1B-supply
-/// token, its pool with IMD at fee 12500 and spacing 60, opening at 2,500 IMD for the whole supply, 85% of the supply
+/// token, its pool with IMD at fee 12500 and spacing 60, opening at 2,500 IMD for the whole supply, 80% of the supply
 /// seeded single-sided in the token (the launch's poolBps; 10% is the swarm's, 10% team supply: 5% the team, 5% reserved for the Robinhood Chain duel launch, 2026-10-29). And the hook's constructor arguments as a launch file (launch/hook.json) gives
 /// them. Shared by the launch tests and the mainnet-fork rehearsal (script/RehearseMainnet.s.sol).
 library LaunchPolicy {
