@@ -5,6 +5,11 @@ import {Vm} from "forge-std/Test.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {Currency, CurrencyLibrary} from "v4-core/src/types/Currency.sol";
 import {ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
+import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
+import {PoolKey} from "v4-core/src/types/PoolKey.sol";
+import {PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
+import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {Base} from "./Base.sol";
 import {HookConfig} from "./Harness.sol";
 
@@ -265,5 +270,65 @@ contract DepthSampleEdgesTest is Base {
         white(1e22, address(0xA11CE)); // samples 1e24 now: the minimum includes it
         assertEq(bid().owner, address(0xA11CE));
         assertGe(bid().strength, 8_000, "the first traded block after the removal measures against 1e24");
+    }
+}
+
+/// The add callback (beforeAddLiquidity) only records a depth sample: it never refuses an add, whatever the range,
+/// size, block or pool state, and v4 sends a zero-liquidity modify (the launch factory's fee collection) down the
+/// remove path, which the hook has no callback for, so collecting fees always runs.
+contract AddCallbackEdgesTest is Base {
+    using PoolIdLibrary for PoolKey;
+    using StateLibrary for IPoolManager;
+
+    function setUp() public {
+        setUpMainDuel();
+    }
+
+    function modify(PoolKey memory k, int24 lo, int24 hi, int256 liquidity) internal returns (BalanceDelta) {
+        return modifyLiquidityRouter.modifyLiquidity(k, ModifyLiquidityParams(lo, hi, liquidity, 0), "");
+    }
+
+    /// The factory's fee collection: a zero-liquidity modify of a position returns its LP fees and changes nothing.
+    function test_zeroLiquidityFeeCollectionRunsAndPaysTheFees() public {
+        white(1e21, address(0xA11CE));
+        black(1e21, address(0xB0B));
+        uint128 before = manager.getLiquidity(id);
+        BalanceDelta fees = modify(pool, -887220, 887220, 0);
+        assertGt(fees.amount0(), 0, "the LP fee in currency0 is collected");
+        assertGt(fees.amount1(), 0, "the LP fee in currency1 is collected");
+        assertEq(manager.getLiquidity(id), before, "a poke moves no liquidity");
+        next(12);
+        modify(pool, -887220, 887220, 0); // a block's first action: still runs
+        white(1e22, address(0xC)); // plays Alice's move and bids for White's next
+        assertEq(st().moveOwner, address(0xA11CE), "Alice's move was played");
+        assertEq(st().bids[whiteTeam()].owner, address(0xC));
+        assertGe(st().bids[whiteTeam()].strength, 8_000, "a poke takes no sample: the 1e24 depth stands");
+    }
+
+    /// An add is never refused: any range on the tick grid (in range or not), any size, before or after the block's
+    /// first swap.
+    /// forge-config: default.fuzz.runs = 256
+    function testFuzz_anAddIsNeverRefused(int24 a, int24 b, uint256 liquidity, bool afterSwap) public {
+        int24 lo = int24(bound(a, -14787, 14786)) * 60;
+        int24 hi = int24(bound(b, int256(lo / 60) + 1, 14787)) * 60;
+        liquidity = bound(liquidity, 1, 1e30);
+        next(12);
+        if (afterSwap) black(1e18, address(0));
+        uint128 before = manager.getLiquidity(id);
+        (, int24 tick,,) = manager.getSlot0(id);
+        modify(pool, lo, hi, int256(liquidity));
+        uint256 expected = before + (lo <= tick && tick < hi ? liquidity : 0);
+        assertEq(manager.getLiquidity(id), expected, "the add went in whole");
+    }
+
+    /// Adds into a pool with nothing in range, and into a pool opened on the hook with no liquidity yet, go in.
+    function test_addsIntoEmptyRangesAreAccepted() public {
+        (PoolKey memory k,) = initPool(currency0, currency1, IHooks(address(hook)), 500, SQRT_PRICE_1_1);
+        modify(k, 600, 1200, 1e20); // out of range: nothing in range before or after
+        assertEq(manager.getLiquidity(k.toId()), 0);
+        modify(k, -600, 600, 1e20);
+        assertEq(manager.getLiquidity(k.toId()), 1e20, "an add into an empty range");
+        modify(k, -600, 600, 1e20);
+        assertEq(manager.getLiquidity(k.toId()), 2e20, "a second add in the same block");
     }
 }
