@@ -233,12 +233,11 @@ contract GameTest is Base {
     // ---------------------------------------------------------------- configuration
 
     function newHook(HookConfig memory c) internal returns (IMDuelHook) {
-        return new IMDuelHook(c.manager, c.engine, c.imd, c.ethFee, c.ethSpacing, c.minImd, c.minEth,
-            c.minImduel, c.turnBlocks);
+        return new IMDuelHook(c.manager, c.engine, c.imd, c.minImd, c.minImduel, c.turnBlocks);
     }
 
-    /// Uniswap's hook checklist, item 1: only the PoolManager drives the callbacks, only the hook itself pays out or
-    /// converts through its gas-capped calls.
+    /// Uniswap's hook checklist, item 1: only the PoolManager drives the callbacks, only the hook itself converts
+    /// through its gas-capped call.
     function test_onlyThePoolManagerAndTheHookCanCallIn() public {
         SwapParams memory p = SwapParams(true, -1e18, MIN_PRICE_LIMIT);
         vm.expectRevert(IMDuelHook.NotManager.selector);
@@ -250,8 +249,6 @@ contract GameTest is Base {
         vm.expectRevert(IMDuelHook.NotManager.selector);
         hook.unlockCallback(abi.encode(uint8(0), abi.encode(address(this), currency0, uint256(1))));
         vm.expectRevert(IMDuelHook.NotSelf.selector);
-        hook.payOut(currency0, address(this), 1);
-        vm.expectRevert(IMDuelHook.NotSelf.selector);
         hook.convertBatch(currency0);
     }
 
@@ -262,16 +259,11 @@ contract GameTest is Base {
         c = config(IChessEngine(address(0xC0DE)), currency0); // an address without code passes: the launch's admission
         vm.expectPartialRevert(Hooks.HookAddressNotValid.selector); // floor builds the hook on a chain where the engine
         newHook(c); // has none (its address is checked off chain); only this plain address stops the deploy
-        c = config(engine, Currency.wrap(address(0))); // ETH as the pair currency, but also an ETH route
-        c.ethFee = 3000;
-        vm.expectRevert(IMDuelHook.BadConfig.selector);
-        newHook(c);
         c = config(engine, currency0);
-        c.ethSpacing = uint24(type(int24).max) + 1;
+        c.turnBlocks = 0;
         vm.expectRevert(IMDuelHook.BadConfig.selector);
         newHook(c);
-        c = config(engine, currency0); // an ETH route whose batches would be capped at nothing
-        (c.ethFee, c.minEth) = (3000, 0);
+        c.turnBlocks = 1_001;
         vm.expectRevert(IMDuelHook.BadConfig.selector);
         newHook(c);
     }

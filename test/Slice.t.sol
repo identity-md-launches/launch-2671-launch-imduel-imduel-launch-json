@@ -56,8 +56,7 @@ contract SliceTest is Base {
         deployV4();
         (imd, duel, x) = (token("IMD"), token("IMDUEL"), token("X"));
         HookConfig memory c = config(v5(), imd);
-        (c.minImd, c.minImduel, c.minEth) = (MIN, MIN, MIN);
-        (c.ethFee, c.ethSpacing) = (3000, 60); // the IMD / ETH route: a plain pool, no hook
+        (c.minImd, c.minImduel) = (MIN, MIN);
         deployHook(c);
         if (shallow) {
             (Currency c0, Currency c1) = sorted(imd, duel);
@@ -123,45 +122,6 @@ contract SliceTest is Base {
         assertEq(bought, spent, "no swap");
         assertEq(burnt, 0.005e18);
         assertEq(burned(), 0.005e18);
-    }
-
-    /// An ETH batch first buys IMD, then $IMDUEL with it; if the main duel stops that second leg at its price limit,
-    /// the IMD it didn't spend goes back to the IMD pile instead of sitting in the hook unaccounted.
-    function test_ethBatchKeepsTheImdTheMainDuelCouldNotTake() public {
-        deploy(true); // the main duel has no liquidity: the IMD leg buys nothing
-        PoolKey memory route = PoolKey(CurrencyLibrary.ADDRESS_ZERO, imd, 3000, 60, IHooks(address(0)));
-        manager.initialize(route, SQRT_PRICE_1_1);
-        vm.deal(address(this), 1e30);
-        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(route, ModifyLiquidityParams(-887220, 887220, 1e24, 0), "");
-        (PoolKey memory ethX,) = initPool(CurrencyLibrary.ADDRESS_ZERO, x, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
-        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(ethX, ModifyLiquidityParams(-887220, 887220, 1e24, 0), "");
-        swapNativeInput(ethX, true, -10e18, "", 10e18); // slice 0.01 ETH, over the minimum
-        sampleRoute(2); // the route's third sample: a batch runs
-        assertEq(hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId()), 0, "the ETH was sold for IMD");
-        assertGt(hook.pile(imd.toId()), 0, "the IMD waits in its pile for the main duel");
-        PoolKey[] memory pools = new PoolKey[](2);
-        (pools[0], pools[1]) = (main, ethX);
-        assertSolvent(imd, pools, nobody());
-        assertSolvent(CurrencyLibrary.ADDRESS_ZERO, pools, nobody());
-    }
-
-    function test_ethDuelsGoThroughTheImdEthPool() public {
-        PoolKey memory route = PoolKey(CurrencyLibrary.ADDRESS_ZERO, imd, 3000, 60, IHooks(address(0)));
-        manager.initialize(route, SQRT_PRICE_1_1);
-        vm.deal(address(this), 1e30);
-        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(route, ModifyLiquidityParams(-887220, 887220, 1e24, 0), "");
-        (PoolKey memory ethX,) = initPool(CurrencyLibrary.ADDRESS_ZERO, x, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
-        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(ethX, ModifyLiquidityParams(-887220, 887220, 1e24, 0), "");
-        assertEq(hook.game(ethX.toId()).slice, 0, "slice in ETH");
-        swapNativeInput(ethX, true, -10e18, "", 10e18); // slice 0.01 ETH: the route's first sample, nothing bought yet
-        assertEq(hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId()), 0.01e18, "waits for three sampled blocks");
-        sampleRoute(1);
-        vm.recordLogs();
-        sampleRoute(1); // the third sample: the batch runs
-        (uint256 spent, uint256 bought,) = converted(vm.getRecordedLogs());
-        assertEq(spent, 0.01e18, "ETH spent");
-        assertGt(bought, 0, "via IMD into $IMDUEL");
-        assertGt(mainChest(), 0);
     }
 
     function test_aBatchStopsAtItsPriceLimit() public {
@@ -259,73 +219,6 @@ contract SliceTest is Base {
         return uint256(v < 0 ? -v : v);
     }
 
-    /// A deep IMD / ETH route and a deep ETH duel, the hook converting from MIN.
-    function deployEthDuel() internal returns (PoolKey memory ethX) {
-        deployV4();
-        (imd, duel, x) = (token("IMD"), token("IMDUEL"), token("X"));
-        HookConfig memory c = config(v5(), imd);
-        (c.minImd, c.minImduel, c.minEth, c.ethFee, c.ethSpacing) = (MIN, MIN, MIN, 3000, 60);
-        deployHook(c);
-        main = newPool(imd, duel);
-        sampleBlocks(main);
-        PoolKey memory route = PoolKey(CurrencyLibrary.ADDRESS_ZERO, imd, 3000, 60, IHooks(address(0)));
-        manager.initialize(route, SQRT_PRICE_1_1);
-        vm.deal(address(this), 1e30);
-        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(route, ModifyLiquidityParams(-887220, 887220, 1e24, 0), "");
-        (ethX,) = initPool(CurrencyLibrary.ADDRESS_ZERO, x, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
-        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(ethX, ModifyLiquidityParams(-887220, 887220, 1e24, 0), "");
-    }
-
-    /// The IMD / ETH pool isn't ours to watch, so an ETH batch is capped instead: a whale's trade in an ETH duel
-    /// leaves a big ETH slice, converted ten minimums at a time.
-    function test_anEthBatchIsCapped() public {
-        PoolKey memory ethX = deployEthDuel();
-        swapNativeInput(ethX, true, -100e18, "", 100e18); // slice 0.1 ETH: a hundred minimums; the route's first sample
-        sampleRoute(1);
-        vm.recordLogs();
-        sampleRoute(1); // the third sample: the batch runs
-        (uint256 spent,,) = converted(vm.getRecordedLogs());
-        assertEq(spent, 10 * MIN, "ten minimums");
-        assertEq(hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId()), 0.1e18 - 10 * MIN, "the rest waits");
-    }
-
-    /// One ETH batch per block, however often convert is called: a caller who pushed the IMD / ETH price can't sell
-    /// the waiting pile into it batch after batch (swarm audit, engine launch job).
-    function test_oneEthBatchPerBlock() public {
-        PoolKey memory ethX = deployEthDuel();
-        swapNativeInput(ethX, true, -100e18, "", 100e18); // its own batch samples the route first
-        uint256 waiting = hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId());
-        sampleRoute(1); // the second
-        for (uint256 i; i < 5; i++) hook.convert(CurrencyLibrary.ADDRESS_ZERO);
-        assertEq(hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId()), waiting, "none until three blocks are sampled");
-        next(12);
-        for (uint256 i; i < 5; i++) hook.convert(CurrencyLibrary.ADDRESS_ZERO);
-        assertEq(hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId()), waiting - 10 * MIN, "one in the next, however often asked");
-    }
-
-    /// An ETH batch whose route leg buys nothing (no liquidity near the IMD / ETH price) leaves the ETH waiting and
-    /// swaps nothing in the main duel; asked directly, convert returns (swarm audit 2026-10-27, second job, finding 1).
-    function test_anEthBatchWithAnEmptyRouteWaits() public {
-        deployV4();
-        (imd, duel, x) = (token("IMD"), token("IMDUEL"), token("X"));
-        HookConfig memory c = config(v5(), imd);
-        (c.minImd, c.minImduel, c.minEth, c.ethFee, c.ethSpacing) = (MIN, MIN, MIN, 3000, 60);
-        deployHook(c);
-        main = newPool(imd, duel);
-        manager.initialize(PoolKey(CurrencyLibrary.ADDRESS_ZERO, imd, 3000, 60, IHooks(address(0))), SQRT_PRICE_1_1); // empty
-        (PoolKey memory ethX,) = initPool(CurrencyLibrary.ADDRESS_ZERO, x, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
-        vm.deal(address(this), 1e30);
-        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(ethX, ModifyLiquidityParams(-887220, 887220, 1e24, 0), "");
-        swapNativeInput(ethX, true, -10e18, "", 10e18); // slice 0.01 ETH, over the minimum: a batch runs and buys nothing
-        uint256 waiting = hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId());
-        assertEq(waiting, 0.01e18, "the ETH waits");
-        hook.convert(CurrencyLibrary.ADDRESS_ZERO);
-        assertEq(hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId()), waiting, "asked directly: nothing to buy, nothing lost");
-        PoolKey[] memory pools = new PoolKey[](2);
-        (pools[0], pools[1]) = (main, ethX);
-        assertSolvent(CurrencyLibrary.ADDRESS_ZERO, pools, nobody());
-    }
-
     function test_aFailedConversionNeverBreaksATrade() public {
         deploy(true); // the main duel has no liquidity: a batch can't buy anything
         PoolKey memory duelX = newPool(x, imd);
@@ -337,13 +230,18 @@ contract SliceTest is Base {
     }
 
     /// A duel whose slice couldn't buy $IMDUEL can't open, so no pile waits for good (swarm audit 2026-10-27, finding 4).
+    /// There is no native ETH route: an ETH duel pairs IMD or $IMDUEL and its slice is taken in that token.
     function test_noRouteNoDuel() public {
         Currency y = token("Y");
         (Currency c0, Currency c1) = sorted(x, y);
         vm.expectRevert(); // NoRoute, wrapped by the pool manager
         initPool(c0, c1, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
+        vm.expectRevert(); // ETH against a token: no route either
+        initPool(CurrencyLibrary.ADDRESS_ZERO, x, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
         newPool(x, imd); // with a routing side it opens
         newPool(x, duel);
+        (PoolKey memory ethImd,) = initPool(CurrencyLibrary.ADDRESS_ZERO, imd, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
+        assertEq(hook.game(ethImd.toId()).slice, 1, "ETH / IMD: the slice in IMD");
     }
 
     function test_anyoneCanConvert() public {

@@ -26,7 +26,7 @@ abstract contract Base is Chessboard, V4Fixture {
     bytes32 constant BID = keccak256("Bid(bytes32,uint32,uint16,address,uint256,uint16)");
     bytes32 constant OVER = keccak256("GameOver(bytes32,uint32,uint8,uint16)");
     bytes32 constant FAILED = keccak256("EngineFailed(bytes32,uint32,uint16)");
-    bytes32 constant REWARD = keccak256("Reward(bytes32,uint32,uint16,address,address,uint256,bool)");
+    bytes32 constant REWARD = keccak256("Reward(bytes32,uint32,uint16,address,address,uint256)");
 
     IChessEngine engine;
     IMDuelHarness hook;
@@ -46,10 +46,9 @@ abstract contract Base is Chessboard, V4Fixture {
         return 1;
     }
 
-    /// The hook with IMD `imd`, no IMD / ETH route and conversions never; $IMDUEL is the other token of the first pool
-    /// opened.
+    /// The hook with IMD `imd` and conversions never; $IMDUEL is the other token of the first pool opened.
     function config(IChessEngine e, Currency imd) internal view returns (HookConfig memory) {
-        return HookConfig(manager, e, imd, 0, 0, NEVER, NEVER, NEVER, turnBlocks());
+        return HookConfig(manager, e, imd, NEVER, NEVER, turnBlocks());
     }
 
     /// A hook whose IMD and $IMDUEL are two fresh tokens, their main duel opened (no liquidity), so the default
@@ -123,20 +122,11 @@ abstract contract Base is Chessboard, V4Fixture {
     }
 
     /// Three new blocks with a dust trade (100 wei: no fee) in pool `k`, so a batch there has the three sampled blocks
-    /// it needs; the IMD / ETH route is sampled by ETH batches instead (`sampleRoute`).
+    /// it needs.
     function sampleBlocks(PoolKey memory k) internal {
         for (uint256 i; i < 3; i++) {
             next(12);
             swap(k, true, -100, "");
-        }
-    }
-
-    /// `n` new blocks each asking for an ETH batch: with ETH piled, each samples the IMD / ETH route (the third one
-    /// converts).
-    function sampleRoute(uint256 n) internal {
-        for (uint256 i; i < n; i++) {
-            next(12);
-            hook.convert(CurrencyLibrary.ADDRESS_ZERO);
         }
     }
 
@@ -163,15 +153,15 @@ abstract contract Base is Chessboard, V4Fixture {
         return manager.balanceOf(address(hook), c.toId());
     }
 
-    /// What the hook holds in `c`, and what it owes in `c`: the chests of `pools`, the slice pile and the withdrawable
-    /// balances of `who`.
+    /// What the hook holds in `c`, and what it owes in `c`: the chests of `pools`, the slice pile and the rewards
+    /// recorded for `who` and for the signing wallet (the owner of every trade that names none).
     function books(Currency c, PoolKey[] memory pools, address[] memory who) internal view returns (uint256, uint256) {
-        uint256 total = hook.pile(c.toId());
+        uint256 total = hook.pile(c.toId()) + hook.owed(tx.origin, c.toId());
         for (uint256 i; i < pools.length; i++) {
             if (pools[i].currency0 == c) total += hook.chest(pools[i].toId(), 0);
             if (pools[i].currency1 == c) total += hook.chest(pools[i].toId(), 1);
         }
-        for (uint256 j; j < who.length; j++) total += hook.owed(who[j], c.toId());
+        for (uint256 j; j < who.length; j++) if (who[j] != tx.origin) total += hook.owed(who[j], c.toId());
         return (claims(c), total);
     }
 

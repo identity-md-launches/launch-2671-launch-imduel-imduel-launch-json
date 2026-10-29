@@ -93,8 +93,6 @@ contract LaunchAdmissionTest is V4Fixture {
         vm.expectRevert(IMDuelHook.NotManager.selector);
         hook.unlockCallback("");
         vm.expectRevert(IMDuelHook.NotSelf.selector);
-        hook.payOut(imd, address(this), 0);
-        vm.expectRevert(IMDuelHook.NotSelf.selector);
         hook.convertBatch(imd);
 
         // the factory's pool: the token with IMD at the policy's price, single-sided seed

@@ -15,10 +15,7 @@ struct HookConfig {
     IPoolManager manager;
     IChessEngine engine;
     Currency imd;
-    uint24 ethFee;
-    uint24 ethSpacing;
     uint256 minImd;
-    uint256 minEth;
     uint256 minImduel;
     uint256 turnBlocks;
 }
@@ -28,7 +25,7 @@ contract IMDuelHarness is IMDuelHook {
     using PoolIdLibrary for PoolKey;
 
     constructor(HookConfig memory c)
-        IMDuelHook(c.manager, c.engine, c.imd, c.ethFee, c.ethSpacing, c.minImd, c.minEth, c.minImduel, c.turnBlocks)
+        IMDuelHook(c.manager, c.engine, c.imd, c.minImd, c.minImduel, c.turnBlocks)
     {}
 
     /// Suites written before the opening surcharge trade right after the main duel opens and expect the plain fee;

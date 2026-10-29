@@ -167,12 +167,22 @@ contract MoneyTest is Base {
         trade(0, TINY, address(0));
     }
 
+    /// What `who` claims in `c`: rewards are recorded, never pushed, and anyone may trigger the claim.
+    function claimed(address who, Currency c) internal returns (uint256) {
+        vm.prank(address(0xDEAD));
+        hook.withdraw(who, c);
+        return c.balanceOf(who);
+    }
+
     function test_whiteCaptureIsPaidInItsTeamTokenFromItsOwnChest() public {
         fund();
         uint256 w = whiteTeam(); // game 0: $IMDUEL's team (currency1), the token people buy
         rookTakesQueen(false, address(0xA11CE), 1e30);
         finalize();
-        assertEq(teamToken(w).balanceOf(address(0xA11CE)), 3e18, "queen 2.7% + check 0.3% of a 100-token chest");
+        assertEq(hook.owed(address(0xA11CE), teamToken(w).toId()), 3e18, "recorded for the owner to claim");
+        assertEq(teamToken(w).balanceOf(address(0xA11CE)), 0, "nothing is pushed inside the trade");
+        assertEq(claimed(address(0xA11CE), teamToken(w)), 3e18, "queen 2.7% + check 0.3% of a 100-token chest");
+        assertEq(hook.owed(address(0xA11CE), teamToken(w).toId()), 0);
         assertEq(hook.chest(id, w), 97e18);
         assertEq(hook.chest(id, 1 - w), 100e18, "the other team's chest is untouched");
         assertSolvent(nobody());
@@ -183,7 +193,7 @@ contract MoneyTest is Base {
         uint256 b = 1 - whiteTeam(); // game 0: IMD's team
         rookTakesQueen(true, address(0xB0B), 1e30);
         finalize();
-        assertEq(teamToken(b).balanceOf(address(0xB0B)), 3e18);
+        assertEq(claimed(address(0xB0B), teamToken(b)), 3e18);
         assertEq(hook.chest(id, b), 97e18);
     }
 
@@ -191,7 +201,7 @@ contract MoneyTest is Base {
         fund();
         rookTakesQueen(false, address(0xA11CE), 1e18); // the move's trade received 0.5e18: cap 1e18
         finalize();
-        assertEq(teamToken(whiteTeam()).balanceOf(address(0xA11CE)), 1e18, "capped");
+        assertEq(claimed(address(0xA11CE), teamToken(whiteTeam())), 1e18, "capped");
         assertEq(hook.chest(id, whiteTeam()), 99e18, "the rest stays in the chest");
     }
 
@@ -207,15 +217,14 @@ contract MoneyTest is Base {
         uint256 w = whiteTeam(); // read before the mate starts game 1 with colours swapped
         hook.applyMove(pool, mv("a1", "a8"), address(0xA11CE), 1e30);
         finalize();
-        assertEq(teamToken(w).balanceOf(address(0xA11CE)), 25.3e18, "mate 25% + check 0.3%");
+        assertEq(claimed(address(0xA11CE), teamToken(w)), 25.3e18, "mate 25% + check 0.3%");
     }
 
     function test_quietMovePaysNothing() public {
         fund();
         hook.applyMove(pool, mv("e2", "e4"), address(0xA11CE), 1e30);
         finalize();
-        assertEq(currency0.balanceOf(address(0xA11CE)), 0);
-        assertEq(currency1.balanceOf(address(0xA11CE)), 0);
+        assertEq(hook.owed(address(0xA11CE), currency0.toId()) + hook.owed(address(0xA11CE), currency1.toId()), 0);
     }
 
     function test_bountyTable() public view {
@@ -239,7 +248,9 @@ contract MoneyTest is Base {
         assertSolvent(nobody());
     }
 
-    function test_failedPayoutStaysOwedAndTheTradeGoesThrough() public {
+    /// A reward is recorded, never sent inside the trade: an owner that can't receive it (here a contract refusing
+    /// ETH) costs the trade nothing, and the owner claims it once it can.
+    function test_rewardsAreClaimedNeverPushed() public {
         // a native ETH pool: White (ETH's team) is paid in ETH, to a contract that refuses ETH
         (pool, id) = initPool(CurrencyLibrary.ADDRESS_ZERO, currency1, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
         vm.deal(address(this), 1_000 ether);
@@ -247,12 +258,14 @@ contract MoneyTest is Base {
         hook.fundChest{value: 100 ether}(pool, false, 100 ether);
         address refuser = address(new RefusesEth());
         vm.recordLogs();
-        rookTakesQueen(false, refuser, 1e30); // played and paid: the payout fails
+        rookTakesQueen(false, refuser, 1e30); // played: the reward is recorded
         next(12);
         swapNativeInput(pool, true, -int256(TINY), "", TINY); // trading goes on
-        assertEq(hook.owed(refuser, 0), 3 ether, "kept owed");
+        assertEq(hook.owed(refuser, 0), 3 ether, "recorded");
         assertEq(refuser.balance, 0);
         assertEq(count(vm.getRecordedLogs(), REWARD), 1);
+        vm.expectRevert(); // it can't take ETH yet
+        hook.withdraw(refuser, CurrencyLibrary.ADDRESS_ZERO);
         RefusesEth(payable(refuser)).acceptEth();
         vm.prank(address(0xDEAD)); // anyone may retry; only the reward owner receives it
         hook.withdraw(refuser, CurrencyLibrary.ADDRESS_ZERO);

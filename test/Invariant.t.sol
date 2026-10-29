@@ -23,6 +23,7 @@ contract Handler is Test {
     PoolSwapTest router;
     PoolKey key;
     address[] public owners;
+    mapping(address => bool) listed; // every address a reward can be recorded for (the books count them)
     uint256 public swaps;
     uint256 public moves;
 
@@ -34,10 +35,17 @@ contract Handler is Test {
             t.approve(address(router), type(uint256).max);
             t.approve(address(hook), type(uint256).max);
         }
-        owners.push(address(0xA));
-        owners.push(address(0xB));
-        owners.push(address(0xC));
-        owners.push(tx.origin);
+        _noteOwner(address(0xA));
+        _noteOwner(address(0xB));
+        _noteOwner(address(0xC));
+        _noteOwner(tx.origin);
+    }
+
+    function _noteOwner(address who) internal {
+        if (!listed[who]) {
+            listed[who] = true;
+            owners.push(who);
+        }
     }
 
     function ownersLength() external view returns (uint256) {
@@ -48,6 +56,7 @@ contract Handler is Test {
         size = bound(size, 1e12, 20e18);
         uint16 plyBefore = hook.game(key.toId()).ply;
         bytes memory data = owner % 5 == 4 ? bytes("") : abi.encodePacked(owners[owner % 3]);
+        if (owner % 5 == 4) _noteOwner(tx.origin); // the owner of a trade naming none: here the random sender
         router.swap(
             key,
             SwapParams(zeroForOne, exactOut ? int256(size) : -int256(size), zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1),

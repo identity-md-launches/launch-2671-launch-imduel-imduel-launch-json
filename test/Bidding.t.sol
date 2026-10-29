@@ -175,9 +175,33 @@ contract BiddingTest is Base {
         uint256 before = MockERC20(Currency.unwrap(currency0)).balanceOf(address(0xB0B));
         white(1e17, address(0));
         assertEq(st().moveCaptured, 5, "Kxg7 takes the queen");
+        hook.withdraw(address(0xB0B), currency0); // recorded for the owner, claimed by anyone for it
         assertGt(MockERC20(Currency.unwrap(currency0)).balanceOf(address(0xB0B)), before, "paid in Black's token");
         assertLt(hook.chest(id, 0), own + 1e18, "from Black's chest");
         assertGe(hook.chest(id, 1), other, "White's chest pays nothing");
+    }
+
+    // ---------------------------------------------------------------- who a trade bids for
+
+    /// The owner is the address in hookData (20 bytes packed or 32 bytes ABI-encoded), else the wallet that signed
+    /// the transaction: a trade through any router or aggregator earns. A zero address counts as none.
+    function test_theOwnerIsTheHookDataAddressElseTheSigner() public {
+        uint256 w = whiteTeam();
+        swap(pool, w == 1, -1e18, abi.encodePacked(address(0xA11CE)));
+        assertEq(bid().owner, address(0xA11CE), "20 bytes packed");
+        swap(pool, w == 1, -2e18, abi.encode(address(0xB0B)));
+        assertEq(bid().owner, address(0xB0B), "32 bytes ABI-encoded");
+        swap(pool, w == 1, -3e18, "");
+        assertEq(bid().owner, tx.origin, "none: the signing wallet");
+        swap(pool, w == 1, -4e18, abi.encode(address(0)));
+        assertEq(bid().owner, tx.origin, "a zero address counts as none");
+        swap(pool, w == 1, -5e18, hex"0102");
+        assertEq(bid().owner, tx.origin, "anything else counts as none");
+        swap(pool, w == 1, -6e18, abi.encodePacked(bytes12(0xffffffffffffffffffffffff), address(0xCAFE)));
+        assertEq(bid().owner, tx.origin, "32 bytes with dirty padding count as none");
+        vm.prank(address(this), address(0x51)); // a relayed trade: the signer, not the caller
+        swap(pool, w == 1, -7e18, "");
+        assertEq(bid().owner, address(0x51), "the transaction's signer");
     }
 
     // ---------------------------------------------------------------- timeouts

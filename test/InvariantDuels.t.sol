@@ -49,6 +49,7 @@ contract DuelsHandler is Test {
     PoolKey[] public pools;
     Currency[] public currencies;
     address[] public owners;
+    mapping(address => bool) listed; // every address a reward can be recorded for (the books count them)
     uint256 public swaps;
     uint256 public moves;
 
@@ -67,13 +68,13 @@ contract DuelsHandler is Test {
             t.approve(address(hook), type(uint256).max);
         }
         vm.deal(address(this), 1e30);
-        owners.push(address(0xA11CE)); // not 0xA / 0xB: those are precompiles and refuse ETH
-        owners.push(address(0xB0B));
-        owners.push(address(new NoEth()));
+        _noteOwner(address(0xA11CE)); // not 0xA / 0xB: those are precompiles and refuse ETH
+        _noteOwner(address(0xB0B));
+        _noteOwner(address(new NoEth()));
         // paid in ETH, it takes 1 wei of IMD from the PoolManager and leaves the debt: its reward must be refused and
         // owed, never let it revert the trade
-        owners.push(address(new DebtOwner(hook_.manager(), currencies_[0])));
-        owners.push(tx.origin);
+        _noteOwner(address(new DebtOwner(hook_.manager(), currencies_[0])));
+        _noteOwner(tx.origin);
     }
 
     /// The chain's block and time, read in a fresh call: with via_ir a function that rolled may reuse stale values.
@@ -158,6 +159,13 @@ contract DuelsHandler is Test {
         return currencies.length;
     }
 
+    function _noteOwner(address who) internal {
+        if (!listed[who]) {
+            listed[who] = true;
+            owners.push(who);
+        }
+    }
+
     function ownersLength() external view returns (uint256) {
         return owners.length;
     }
@@ -189,6 +197,7 @@ contract DuelsHandler is Test {
         bytes32[] memory others = new bytes32[](pools.length);
         for (uint256 i; i < pools.length; i++) others[i] = _gameHash(i);
         bytes memory data = owner % 5 == 4 ? bytes("") : abi.encodePacked(owners[owner % 4]);
+        if (owner % 5 == 4) _noteOwner(tx.origin); // the owner of a trade naming none: here the random sender
         if (withEvents) vm.recordLogs();
         router.swap{value: ethIn ? size : 0}(
             k,
@@ -290,7 +299,7 @@ contract DuelsHandler is Test {
     function withdrawReward(uint8 owner, uint8 c) external {
         address who = owners[owner % owners.length];
         Currency cur = currencies[c % currencies.length];
-        if (who.code.length != 0 && cur.isAddressZero()) return;
+        if ((who.code.length != 0 || uint160(who) < 0x100) && cur.isAddressZero()) return; // contracts and precompiles
         hook.withdraw(who, cur);
     }
 
@@ -356,15 +365,12 @@ contract InvariantDuelsTest is Base {
         }
         vm.deal(address(this), 1e30);
         HookConfig memory c = config(v5(), imdC);
-        (c.ethFee, c.ethSpacing) = (3000, 60);
-        // ETH piles up longer than one batch of the thin main duel can take, so its IMD leg stops at the price limit
-        (c.minImd, c.minEth, c.minImduel) = (imdMinimum(), 3e17, 1e15);
+        (c.minImd, c.minImduel) = (imdMinimum(), 1e15);
         deployHook(c);
         hook.setOpening(true); // the opening surcharge as the real hook has it: pools open now, trades follow
-        open(CurrencyLibrary.ADDRESS_ZERO, imdC, IHooks(address(0)), 1e24); // the route: no hook
         keys.push(open(imdC, duelC, IHooks(address(hook)), 1e20)); // the main duel, first on the hook, thin as at launch
         keys.push(open(xC, imdC, IHooks(address(hook)), 1e24));
-        keys.push(open(CurrencyLibrary.ADDRESS_ZERO, xC, IHooks(address(hook)), 1e24));
+        keys.push(open(CurrencyLibrary.ADDRESS_ZERO, imdC, IHooks(address(hook)), 1e24)); // an ETH duel: its slice in IMD
         keys.push(open(xC, duelC, IHooks(address(hook)), 1e24));
         (pool, id) = (keys[0], keys[0].toId());
         Currency[] memory cs = new Currency[](4);

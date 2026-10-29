@@ -16,17 +16,14 @@ import {HookConfig} from "./Harness.sol";
 import {SliceTest} from "./Slice.t.sol";
 
 /// Conversion batches against an attacker who owns the last transaction of one block and the first of the next (hook
-/// job f7f2a606's flow finding, 2026-10-29, and its ETH-route cousin). A batch must never buy at a price pushed in an
-/// earlier transaction: its reference is a price the attacker had to hold in public for a whole block, and what one
-/// block can sell is capped.
+/// job f7f2a606's flow finding, 2026-10-29). A batch must never buy at a price pushed in an earlier transaction: its
+/// reference is a price the attacker had to hold through two public blocks, and what one block can sell is capped.
 contract CrossBlockTest is SliceTest {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
     using StateLibrary for *;
 
     address attacker = makeAddr("attacker");
-    PoolKey route;
-    PoolKey ethX;
 
     function arm(Currency c) internal {
         MockERC20 t = MockERC20(Currency.unwrap(c));
@@ -133,63 +130,4 @@ contract CrossBlockTest is SliceTest {
 
     // ---------------------------------------------------------------- the ETH route
 
-    /// The IMD / ETH route with `routeLiquidity` of others' liquidity at 1:1, a deep ETH duel whose trades pile
-    /// ~0.5 ETH of slices in one block (one ETH batch per block: the first trade's batch runs, the rest wait).
-    function setUpEthPile(uint128 routeLiquidity) internal {
-        deployV4();
-        (imd, duel, x) = (token("IMD"), token("IMDUEL"), token("X"));
-        HookConfig memory c = config(v5(), imd);
-        (c.minImd, c.minImduel, c.minEth, c.ethFee, c.ethSpacing) = (NEVER, NEVER, 0.05 ether, 3000, 60);
-        deployHook(c);
-        main = newPool(imd, duel);
-        route = PoolKey(CurrencyLibrary.ADDRESS_ZERO, imd, 3000, 60, IHooks(address(0)));
-        manager.initialize(route, SQRT_PRICE_1_1);
-        vm.deal(address(this), 1e30);
-        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(route, ModifyLiquidityParams(-887220, 887220, int256(uint256(routeLiquidity)), 0), "");
-        (ethX,) = initPool(CurrencyLibrary.ADDRESS_ZERO, x, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
-        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(ethX, ModifyLiquidityParams(-887220, 887220, 1e24, 0), "");
-        for (uint256 i; i < 5; i++) swapNativeInput(ethX, true, -100e18, "", 100e18);
-        arm(imd);
-        vm.deal(attacker, 1e30);
-        next(12);
-    }
-
-    /// The route pool isn't ours to watch, so an ETH batch trusts its price now: in one transaction the attacker parks
-    /// a one-spacing IMD band where IMD is 100x dearer (sqrt 10%), pushes the route's price to it and calls
-    /// convert(ETH). The hook sells the capped batch (0.5 ETH) into the band for a hundredth of its worth. The push
-    /// goes through the route's other liquidity, so it costs more the deeper that pool is; a thin route pays.
-    function test_ethRouteSameBlockPush() public {
-        setUpEthPile(1e18); // thin: others' liquidity worth about 1 ETH a side
-        uint256 pile0 = hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId());
-        emit log_named_uint("ETH pile before (1e18)", pile0);
-        (uint160 home,,,) = manager.getSlot0(route.toId());
-        uint256 imd0 = imd.balanceOf(attacker);
-        uint256 eth0 = attacker.balance;
-        int24 t1 = TickMath.getTickAtSqrtPrice(uint160(uint256(home) / 10)) / 60 * 60;
-        ModifyLiquidityParams memory band = ModifyLiquidityParams(t1 - 60, t1, 1e22, 0);
-
-        vm.startPrank(attacker);
-        modifyLiquidityRouter.modifyLiquidity(route, band, "");
-        pushPool(route, true, TickMath.getSqrtPriceAtTick(t1)); // ETH in: the price (IMD per ETH) falls
-        uint256 imdHook0 = hook.pile(imd.toId());
-        hook.convert(CurrencyLibrary.ADDRESS_ZERO);
-        uint256 spent = pile0 - hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId());
-        band.liquidityDelta = -1e22;
-        modifyLiquidityRouter.modifyLiquidity(route, band, "");
-        pushPool(route, false, home);
-        vm.stopPrank();
-
-        // what the batch's ETH bought, in IMD: the IMD leg went on into the main duel, so count the pile it left plus
-        // what the main duel took (the main duel is at 1:1 and deep: its batch spends within 0.2%)
-        uint256 fair = inImd(spent, home, false); // IMD per ETH at the home price
-        uint256 got = hook.pile(imd.toId()) - imdHook0 + mainChest() * 2; // half to the chest, half burned, at ~1:1
-        int256 dImd = int256(imd.balanceOf(attacker)) - int256(imd0);
-        int256 profit = int256(attacker.balance) - int256(eth0) + (dImd < 0 ? -int256(inImd(_abs(dImd), home, false)) : int256(inImd(_abs(dImd), home, false)));
-        emit log_named_uint("ETH the batch sold (1e18)", spent);
-        emit log_named_uint("IMD it got (1e18)", got);
-        emit log_named_uint("IMD it was worth at the home price (1e18)", fair);
-        emit log_named_int("attacker profit (ETH at the home price, 1e18)", profit);
-        assertGe(got + 1, fair * 995 / 1000, "the batch isn't sold at a price pushed in the same transaction");
-        assertLe(profit, 0, "the attack doesn't pay");
-    }
 }

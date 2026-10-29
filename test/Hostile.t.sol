@@ -284,40 +284,56 @@ contract HostileTest is Base {
         assertEq(claims(token), 100e18);
     }
 
-    function test_reenteringTokenCannotBreakAPayout() public {
+    /// A token that calls back on transfer gets its chance only inside a claim, in the hook's own unlock: a nested
+    /// withdrawal there can't unlock again, the claim reverts as a whole and nothing is lost.
+    function test_reenteringTokenCannotBreakAClaim() public {
         ReenterToken t = new ReenterToken();
         pairWith(t);
         hook.fundChest(pool, tokenTeam() == 1, 100e18);
-        // first leave a legitimate reward owed to another owner, so the malicious callback attempts an unlock
-        vm.mockCall(address(t), abi.encodeWithSignature("transfer(address,uint256)", address(0xCAFE), 3e18), abi.encode(false));
         tokenTeamTakesQueenFor(address(0xCAFE));
         finalizeWithATinyTrade();
-        assertEq(hook.owed(address(0xCAFE), token.toId()), 3e18);
-        vm.clearMockedCalls();
-        t.arm(address(0xB0B), address(hook), abi.encodeCall(IMDuelHook.withdraw, (address(0xCAFE), token)));
+        assertEq(hook.owed(address(0xCAFE), token.toId()), 3e18, "recorded");
         tokenTeamTakesQueenFor(address(0xB0B));
         finalizeWithATinyTrade();
-        assertGt(hook.owed(address(0xB0B), token.toId()), 0, "payout failed safely and is owed");
-        assertEq(t.balanceOf(address(0xB0B)), 0);
-        assertEq(hook.owed(address(0xCAFE), token.toId()), 3e18, "reentrant withdrawal rolled back");
+        uint256 bob = hook.owed(address(0xB0B), token.toId());
+        assertGt(bob, 0);
+        t.arm(address(0xB0B), address(hook), abi.encodeCall(IMDuelHook.withdraw, (address(0xCAFE), token)));
+        vm.expectRevert();
+        hook.withdraw(address(0xB0B), token); // the callback's nested unlock fails, so the whole claim does
+        assertEq(hook.owed(address(0xB0B), token.toId()), bob, "nothing lost");
+        assertEq(hook.owed(address(0xCAFE), token.toId()), 3e18, "nothing moved");
+        t.arm(address(0), address(0), "");
+        hook.withdraw(address(0xB0B), token);
+        assertEq(t.balanceOf(address(0xB0B)), bob, "claimed once the token behaves");
     }
 
-    // ---------------------------------------------------------------- payouts inside the unlock (job f7f2a606, medium)
+    // ---------------------------------------------------------------- hostile move owners (jobs f7f2a606 and 885d5cb6)
 
-    /// A move owner that is paid while the PoolManager is unlocked may act on it. One that takes 1 wei of anything and
-    /// leaves the debt unsettled would make the whole trade revert after the payout "succeeded", and every later trade
-    /// of the duel repeats the same resolve and the same revert, for about a day. The payout must be refused instead:
-    /// the reward stays owed, the move is played, trading goes on.
+    /// A move owner paid while the PoolManager is unlocked could act on it: take 1 wei and leave the debt, settle 1 wei
+    /// into the hook's own delta, or sync a currency, each making the trade that plays its move revert, and every
+    /// later one, for about a day (the four mediums of launches f7f2a606 and 2666). Rewards are never sent inside a
+    /// trade: the owner's code never runs, the reward is recorded, the move is played, trading goes on.
     function debtOwnerIsRefusedAndTradingGoesOn(Currency debtIn) internal {
+        debtOwnerIsRefusedAndTradingGoesOn(debtIn, false);
+    }
+
+    function debtOwnerIsRefusedAndTradingGoesOn(Currency debtIn, bool creditsTheHook) internal {
         DebtOwner r = new DebtOwner(manager, debtIn);
+        if (creditsTheHook) {
+            r.creditTheHook(address(hook));
+            vm.deal(address(r), 1 ether);
+            // the other chest worth more, so the fee is taken on the ETH side and the hook holds an ETH delta when it pays
+            MockERC20(Currency.unwrap(pool.currency1)).approve(address(hook), type(uint256).max);
+            hook.fundChest(pool, true, 100e18);
+        }
         if (token.isAddressZero()) hook.fundChest{value: 10 ether}(pool, false, 10 ether);
         else hook.fundChest(pool, tokenTeam() == 1, 10e18);
-        uint256 chest0 = hook.chest(id, tokenTeam());
-        queenForcedOn(address(r)); // the trade that plays and pays: it must not revert
+        vm.recordLogs();
+        queenForcedOn(address(r)); // the trade that plays the move: it must not revert
         assertEq(st().ply, 1, "the move is played");
-        uint256 bounty = chest0 * 270 / 10_000;
-        assertEq(hook.owed(address(r), token.toId()), bounty, "the reward is owed, not pushed");
-        assertEq(hook.chest(id, tokenTeam()), chest0 - bounty);
+        uint256 bounty = reward(vm.getRecordedLogs());
+        assertGe(bounty, 10e18 * 270 / 10_000, "a queen's bounty from the chest");
+        assertEq(hook.owed(address(r), token.toId()), bounty, "the reward is recorded, never pushed");
         assertEq(manager.getNonzeroDeltaCount(), 0);
         next(12);
         trade(tokenTeam(), 1e18, address(0)); // and trading goes on, both ways
@@ -346,9 +362,23 @@ contract HostileTest is Base {
         assertSolvent(nobody());
     }
 
+    /// The one Reward in `logs`: its amount.
+    function reward(Vm.Log[] memory logs) internal pure returns (uint256 amount) {
+        for (uint256 i; i < logs.length; i++) {
+            if (logs[i].topics[0] == REWARD) (,,,, amount) = abi.decode(logs[i].data, (uint32, uint16, address, address, uint256));
+        }
+    }
+
     function test_anEthOwnerLeavingADebtCannotFreezeTheDuel() public {
         pairEth();
         debtOwnerIsRefusedAndTradingGoesOn(pool.currency1);
+    }
+
+    /// The recipient settles 1 wei into the hook's own delta instead (nonzero already: the swap's fee claims), so the
+    /// count of nonzero deltas doesn't move; the guard must look at the hook's deltas themselves.
+    function test_anEthOwnerCreditingTheHookCannotFreezeTheDuel() public {
+        pairEth();
+        debtOwnerIsRefusedAndTradingGoesOn(pool.currency1, true);
     }
 
     function test_aCallbackTokenOwnerLeavingADebtCannotFreezeTheDuel() public {

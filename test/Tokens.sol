@@ -106,9 +106,14 @@ contract CallbackToken is MockERC20 {
 contract DebtOwner is ITransferSink {
     IPoolManager immutable manager;
     Currency immutable c;
+    address public creditTo; // set: instead of taking, pay 1 wei of native ETH into this address's own delta
 
     constructor(IPoolManager manager_, Currency c_) {
         (manager, c) = (manager_, c_);
+    }
+
+    function creditTheHook(address hook) external {
+        creditTo = hook;
     }
 
     receive() external payable {
@@ -119,8 +124,16 @@ contract DebtOwner is ITransferSink {
         _debt();
     }
 
+    /// Either a debt of its own (a new nonzero delta), or 1 wei settled into the hook's delta, which is already
+    /// nonzero during a swap (its minted fee claims): the count of nonzero deltas doesn't change, the hook ends the
+    /// unlock 1 wei off and the trade reverts (job 885d5cb6's flow and economics findings).
     function _debt() internal {
-        manager.take(c, address(this), 1);
+        if (creditTo != address(0)) {
+            manager.sync(Currency.wrap(address(0)));
+            manager.settleFor{value: 1}(creditTo);
+        } else {
+            manager.take(c, address(this), 1);
+        }
     }
 }
 
