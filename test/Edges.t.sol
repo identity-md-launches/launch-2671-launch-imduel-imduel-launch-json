@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {Vm} from "forge-std/Test.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {Currency, CurrencyLibrary} from "v4-core/src/types/Currency.sol";
+import {ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
 import {Base} from "./Base.sol";
 import {HookConfig} from "./Harness.sol";
 
@@ -177,5 +178,92 @@ contract PreviewEdgesTest is Base {
         next(12);
         (ready,) = hook.previewMove(id, keccak256("h"));
         assertTrue(ready, "the last block");
+    }
+}
+
+/// The conversion batch bound (_batch) for every pile and minimum: never more than the pile, never more than ten
+/// minimums, exactly ten minimums once the pile holds them, the whole pile below, and no overflow for any minimum.
+contract BatchBoundFuzzTest is Base {
+    function setUp() public {
+        setUpMainDuel();
+    }
+
+    /// forge-config: default.fuzz.runs = 1000
+    function testFuzz_batchBound(uint256 amount, uint256 min) public view {
+        min = bound(min, 1, type(uint256).max);
+        uint256 b = hook.batch(amount, min);
+        assertLe(b, amount, "never more than the pile");
+        if (min <= type(uint256).max / 10) {
+            assertLe(b, 10 * min, "never more than ten minimums");
+            if (amount >= 10 * min) assertEq(b, 10 * min, "ten minimums once the pile holds them");
+            else assertEq(b, amount, "the whole pile below ten minimums");
+        } else {
+            assertEq(b, amount, "a minimum too large to multiply leaves the pile whole");
+        }
+    }
+
+    function test_batchAtTheEdges() public view {
+        assertEq(hook.batch(type(uint256).max, 1), 10, "one-wei minimum, largest pile");
+        assertEq(hook.batch(type(uint256).max, type(uint256).max / 10), type(uint256).max / 10 * 10);
+        assertEq(hook.batch(type(uint256).max, type(uint256).max / 10 + 1), type(uint256).max, "no overflow");
+        assertEq(hook.batch(9, 1), 9);
+        assertEq(hook.batch(10, 1), 10);
+        assertEq(hook.batch(11, 1), 10);
+    }
+}
+
+/// The sampled bid depth (_sampleDepth) beyond the bracket cases JitStrength covers: the sample is taken once per
+/// block, so liquidity removed after a block's first swap doesn't strengthen that block's later bids; liquidity
+/// removed before a block's first swap counts at once (the minimum of three samples); blocks without a trade take
+/// no sample, so an old deep sample outlives any number of quiet blocks. Main duel at 1:1 with 1e24.
+contract DepthSampleEdgesTest is Base {
+    function setUp() public {
+        setUpMainDuel();
+    }
+
+    function lp(int256 liquidity) internal {
+        modifyLiquidityRouter.modifyLiquidity(pool, ModifyLiquidityParams(-887220, 887220, liquidity, 0), "");
+    }
+
+    function test_liquidityRemovedAfterABlocksFirstSwapDoesNotCountInThatBlock() public {
+        next(12);
+        uint256 snap = vm.snapshotState();
+        black(100, address(0)); // the block's first swap: samples 1e24
+        white(1e20, address(0xA11CE));
+        uint16 control = bid().strength;
+        vm.revertToState(snap);
+        black(100, address(0));
+        lp(-990_000e18); // 1e22 left: a 1e20 trade would be a 1% share of it
+        white(1e20, address(0xA11CE));
+        assertEq(bid().owner, address(0xA11CE));
+        assertEq(bid().strength, control, "measured against the block's 1e24 sample, as without the removal");
+        assertLt(control, 8_000, "a 0.01% share is not near the cap");
+    }
+
+    function test_liquidityRemovedBeforeABlocksFirstSwapCountsAtOnce() public {
+        lp(1e27);
+        for (uint256 i; i < 3; i++) {
+            next(12);
+            black(100, address(0)); // three traded blocks at 1e27 + 1e24
+        }
+        next(12);
+        lp(-1e27);
+        white(1e22, address(0xA11CE)); // this block's sample is 1e24: the smallest of the three
+        assertGe(bid().strength, 8_000, "a 1% share of what the pool holds now");
+    }
+
+    function test_quietBlocksTakeNoSample() public {
+        lp(1e27);
+        for (uint256 i; i < 3; i++) {
+            next(12);
+            black(100, address(0));
+        }
+        lp(-1e27);
+        for (uint256 i; i < 50; i++) {
+            next(12); // fifty blocks without a trade (and the turn timeout passes)
+        }
+        white(1e22, address(0xA11CE)); // samples 1e24 now: the minimum includes it
+        assertEq(bid().owner, address(0xA11CE));
+        assertGe(bid().strength, 8_000, "the first traded block after the removal measures against 1e24");
     }
 }
